@@ -1,0 +1,184 @@
+---
+title: "Data Science Capstone: Week 3 - Milestone Report"
+author: "Ken Wade"
+date: "February 22, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache=TRUE, echo = TRUE)
+```
+## Build Model
+
+```{r, echo=TRUE, results="hide", warning=FALSE, message=FALSE}
+startTime <- proc.time()
+
+library(tm)
+library(wordcloud2)
+library(RWeka)
+
+set.seed(1)
+
+setwd("C:/Users/Ken/Documents/Ken/Continuing Education/Johns Hopkins School of Public Health - Data Science 10 - Capstone/Code")
+dataPath           <- "/data/Coursera-SwiftKey/final/en_US/"
+blogsFileName      <- "en_US.blogs.txt"
+newsFileName       <- "en_US.news.txt"
+twitterFileName    <- "en_US.twitter.txt"
+profanityFileName  <- "profanity.txt"
+```
+
+## Reading the dataset files:
+
+```{r, echo=TRUE, results="hide", warning=FALSE, message=FALSE}
+# define the file reading function
+readfile <- function(filepath, filename) {
+  print(paste("Reading ", filename, "...", sep=""))
+  connection <- file(paste(".", filepath, filename, sep=""), "rb")
+  x <- readLines(connection, encoding="UTF-8", skipNul=TRUE)
+  close(connection)
+  x <- iconv(x, "UTF-8", "ASCII", sub="")
+  print(paste("Reading ", filename, " Complete", sep=""))
+  return(x)
+}
+
+blogs  <- readfile(dataPath, blogsFileName)
+news   <- readfile(dataPath, newsFileName)
+tweets <- readfile(dataPath, twitterFileName)
+profanity <- readfile(dataPath, profanityFileName)
+```
+
+## Sample and divide into Training and Testing sets (throw away the remaining third set)
+```{r, echo=TRUE, results="hide", warning=FALSE, message=FALSE}
+setPercent <- 0.5   # percent of each file type to sample
+setProb <- c(setPercent/100, setPercent/100, 1-2*setPercent/100)  # Must total 1.00
+
+idx <- sample(seq(1, 3), size = length(blogs), replace = TRUE, prob = setProb)
+blogstrain <- blogs[idx == 1]
+blogstest <- blogs[idx == 2]
+
+idx <- sample(seq(1, 3), size = length(news), replace = TRUE, prob = setProb)
+newstrain <- news[idx == 1]
+newstest <- news[idx == 2]
+
+idx <- sample(seq(1, 3), size = length(tweets), replace = TRUE, prob = setProb)
+tweetstrain <- tweets[idx == 1]
+tweetstest <- tweets[idx == 2]
+
+# free up no longer used memory and collect garbage
+rm(idx)
+rm(blogs)
+rm(news)
+rm(tweets)
+gc()
+```
+
+## Create Corpus
+```{r, echo=TRUE, results="hide", warning=FALSE, message=FALSE}
+#allPunctuation     <- "\\[\\\\\\^\\$\\.\\{\\|\\}\\?\"\\(\\)\\*\\+!#%&',-/:;<=>@]_`~" # all punctuation
+#allWordSeparators  <- "\\[\\\\\\^\\$\\.\\{\\|\\}\\?\"\\(\\)\\*\\+!#%&,-/:;<=>@]_`~" # all puncuation but '
+allWordSeparators  <- "\\[|\\\\|\\^|\\$|\\.|\\{|\\||\\}|\\?|\"|\\(|\\)|\\*|\\+|!|#|%|&|,|-|/|:|;|<|=|>|@|]|_|`|~" # all but '
+#notContraction <- "(?<=')\\S*(?=')|\\w+'?\\w*"
+notContraction <- "[a-zA-Z]([a-z'A-Z]*[a-zA-Z])?"
+
+toSpace <- content_transformer(function(x, pattern) {return (gsub(pattern, ' ', x))})
+
+rawCorpus <- Corpus(VectorSource(c(blogstrain, newstrain, tweetstrain)))
+corpus <- rawCorpus
+
+corpus <- tm_map(rawCorpus, toSpace, allWordSeparators)
+#corpus <- tm_map(corpus, toSpace, notContraction)
+corpus <- tm_map(corpus, tolower)
+corpus <- tm_map(corpus, removeNumbers)
+#corpus <- tm_map(corpus, removePunctuation)
+#corpus <- tm_map(corpus, removeWords, stopwords("english"))
+corpus <- tm_map(corpus, removeWords, profanity)
+corpus <- tm_map(corpus, stripWhitespace)
+corpus <- tm_map(corpus, PlainTextDocument)
+```
+
+## Build N-Grams
+```{r, echo=TRUE, results="hide", warning=FALSE, message=FALSE}
+# functions to compute NGrams
+unigram  <- function(x) NGramTokenizer(x, Weka_control(min = 1, max = 1))
+bigram   <- function(x) NGramTokenizer(x, Weka_control(min = 2, max = 2))
+trigram  <- function(x) NGramTokenizer(x, Weka_control(min = 3, max = 3))
+quadgram <- function(x) NGramTokenizer(x, Weka_control(min = 4, max = 4))
+
+# function Calculate Frequencies
+getFreq <- function(tdm){
+  freq <- sort(rowSums(as.matrix(tdm)), decreasing=TRUE)
+  return(data.frame(word=names(freq), freq=freq))
+}
+
+unigram_tdm  <- removeSparseTerms(TermDocumentMatrix(corpus, control=list(tokenize = unigram )), 0.9999)
+bigram_tdm   <- removeSparseTerms(TermDocumentMatrix(corpus, control=list(tokenize = bigram  )), 0.9999)
+trigram_tdm  <- removeSparseTerms(TermDocumentMatrix(corpus, control=list(tokenize = trigram )), 0.9999)
+quadgram_tdm <- removeSparseTerms(TermDocumentMatrix(corpus, control=list(tokenize = quadgram)), 0.9999)
+
+uniFreq  <- getFreq(unigram_tdm)
+biFreq   <- getFreq(bigram_tdm)
+triFreq  <- getFreq(trigram_tdm)
+quadFreq <- getFreq(quadgram_tdm)
+```
+
+# predict the next word
+
+```{r, echo=TRUE, warning=FALSE, message=FALSE}
+searchString <- "then you must be"
+
+if (FALSE) {
+  rawSearchCorpus <- Corpus(VectorSource(searchString))
+
+  searchCorpus <- tm_map(rawSearchCorpus, toSpace, allWordSeparators)
+  #searchCorpus <- tm_map(searchCorpus, toSpace, notContraction)
+  searchCorpus <- tm_map(searchCorpus, tolower)
+  searchCorpus <- tm_map(searchCorpus, removeNumbers)
+  #searchCorpus <- tm_map(searchCorpus, removePunctuation)
+  #searchCorpus <- tm_map(searchCorpus, removeWords, stopwords("english"))
+  searchCorpus <- tm_map(searchCorpus, removeWords, profanity)
+  searchCorpus <- tm_map(searchCorpus, stripWhitespace)
+  searchCorpus <- tm_map(searchCorpus, PlainTextDocument)
+
+  searchString <- trimws(searchCorpus[[1]]$content)
+  }
+
+searchString
+searchString_NumberOfWords <- sum(sapply(gregexpr("\\W+", searchString), length)) + 1
+searchString_NumberOfWords
+# search for last 3 words in quad and see what the most common next word is 
+threeWords <- paste(strsplit(searchString," ")[[1]][(searchString_NumberOfWords-2):(searchString_NumberOfWords-0)], collapse=" ")
+threeWords
+quadList <- grep(paste("^", threeWords, sep=""), quadFreq$word)
+quadPhrase <- paste("'", quadFreq[quadList,]$word, "' occurs ", quadFreq[quadList,]$freq, " times.", sep="")
+head(quadPhrase, 20)
+
+# search for last 2 words in tri and see what the most common next word is
+twoWords <- paste(strsplit(searchString," ")[[1]][(searchString_NumberOfWords-1):(searchString_NumberOfWords-0)], collapse=" ")
+twoWords
+triList <- grep(paste("^", twoWords, sep=""), triFreq$word)
+triPhrase <- paste("'", triFreq[triList,]$word, "' occurs ", triFreq[triList,]$freq, " times.", sep="")
+head(triPhrase, 20)
+
+# search for last word in bi and see what the most common next word is
+lastWord <- paste(strsplit(searchString," ")[[1]][(searchString_NumberOfWords-0):(searchString_NumberOfWords-0)], collapse=" ")
+lastWord
+biList <- grep(paste("^", lastWord, sep=""), biFreq$word)
+biPhrase <- paste("'", biFreq[biList,]$word, "' occurs ", biFreq[biList,]$freq, " times.", sep="")
+head(biPhrase, 20)
+
+# search for last word in uni and see whatthe most common word is
+lastWord
+uniList <- grep(paste("^", lastWord, sep=""), uniFreq$word)
+uniPhrase <- paste("'", uniFreq[uniList,]$word, "' occurs ", uniFreq[uniList,]$freq, " times.", sep="")
+head(uniPhrase, 20)
+```
+
+# Performance Stats
+
+```{r, echo=TRUE, warning=FALSE, message=FALSE}
+endTime <- proc.time()
+elapsedTime <- endTime - startTime
+elapsedTime
+gc()
+```
+

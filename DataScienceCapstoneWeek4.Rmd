@@ -1,0 +1,273 @@
+---
+title: "Data Science Capstone: Week 4 - Improved Modeling"
+author: "Ken Wade"
+date: "February 23, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache=TRUE, echo = TRUE)
+```
+## Build Model
+
+```{r, echo=TRUE, results="hide", warning=FALSE, message=FALSE}
+startTime <- proc.time()
+
+library(ngram)
+
+set.seed(1)
+
+setwd("C:/Users/Ken/Documents/Ken/Continuing Education/Johns Hopkins School of Public Health - Data Science 10 - Capstone/Code")
+dataPath           <- "/data/Coursera-SwiftKey/final/en_US/"
+blogsFileName      <- "en_US.blogs.txt"
+newsFileName       <- "en_US.news.txt"
+twitterFileName    <- "en_US.twitter.txt"
+profanityFileName  <- "profanity.txt"
+```
+
+## Reading the dataset files:
+
+```{r, echo=TRUE, results="hide", warning=FALSE, message=FALSE}
+# define the file reading function
+readfile <- function(filepath, filename) {
+  print(paste("Reading ", filename, "...", sep=""))
+  connection <- file(paste(".", filepath, filename, sep=""), "rb")
+  x <- readLines(connection, encoding="UTF-8", skipNul=TRUE)
+  close(connection)
+  x <- iconv(x, "UTF-8", "ASCII", sub="")
+  print(paste("Reading ", filename, " Complete", sep=""))
+  return(x)
+}
+
+blogs  <- readfile(dataPath, blogsFileName)
+news   <- readfile(dataPath, newsFileName)
+tweets <- readfile(dataPath, twitterFileName)
+profanity <- readfile(dataPath, profanityFileName)
+```
+
+## Sample and divide into Training and Testing sets (throw away the remaining third set)
+```{r, echo=TRUE, results="hide", warning=FALSE, message=FALSE}
+setPercent <- 0.5   # percent of each file type to sample
+setProb <- c(setPercent/100, setPercent/100, 1-2*setPercent/100)  # Must total 1.00
+
+idx <- sample(seq(1, 3), size = length(blogs), replace = TRUE, prob = setProb)
+blogstrain <- blogs[idx == 1]
+blogstest <- blogs[idx == 2]
+
+idx <- sample(seq(1, 3), size = length(news), replace = TRUE, prob = setProb)
+newstrain <- news[idx == 1]
+newstest <- news[idx == 2]
+
+idx <- sample(seq(1, 3), size = length(tweets), replace = TRUE, prob = setProb)
+tweetstrain <- tweets[idx == 1]
+tweetstest <- tweets[idx == 2]
+
+# free up no longer used memory and collect garbage
+rm(idx)
+rm(blogs)
+rm(news)
+rm(tweets)
+gc()
+```
+
+## Create Corpus and clean it up
+```{r, echo=TRUE, results="hide", warning=FALSE, message=FALSE}
+#allPunctuation     <- "\\[\\\\\\^\\$\\.\\{\\|\\}\\?\"\\(\\)\\*\\+!#%&',-/:;<=>@]_`~" # all punctuation
+#allWordSeparators  <- "\\[\\\\\\^\\$\\.\\{\\|\\}\\?\"\\(\\)\\*\\+!#%&,-/:;<=>@]_`~" # all puncuation but '
+allWordSeparators  <- "\\[|\\\\|\\^|\\$|\\.|\\{|\\||\\}|\\?|\"|\\(|\\)|\\*|\\+|!|#|%|&|,|-|/|:|;|<|=|>|@|]|_|`|~" # all but '
+#notContraction <- "(?<=')\\S*(?=')|\\w+'?\\w*"
+notContraction <- "[a-zA-Z]([a-z'A-Z]*[a-zA-Z])?"
+
+cleanString <- function(x) {
+  x <- preprocess(x, case ="lower", remove.punct = FALSE)
+  x <- gsub(allWordSeparators, ' ', x)
+  #x <- gsub(notContraction, ' ', x)
+  x <- gsub("[[:digit:]]", "", x)
+  x <- gsub(paste(profanity, collapse = "|"), "", x)
+  x <- gsub("(?<=[\\s])\\s*|^\\s+|\\s+$", "", x, perl=TRUE)
+  return(x)
+}
+
+rawStr <- concatenate(blogstrain, blogstrain, tweetstrain)
+str <- cleanString(rawStr)
+```
+
+## Build N-Grams
+```{r, echo=TRUE, results="hide", warning=FALSE, message=FALSE}
+uf <- ngram(str, n=1, sep=" ")
+bf <- ngram(str, n=2, sep=" ")
+tf <- ngram(str, n=3, sep=" ")
+qf <- ngram(str, n=4, sep=" ")
+
+uniFreq  <- get.phrasetable(uf)
+biFreq   <- get.phrasetable(bf)
+triFreq  <- get.phrasetable(tf)
+quadFreq <- get.phrasetable(qf)
+
+names(uniFreq)  <- c("word", "freq", "probability")
+names(biFreq)   <- c("word", "freq", "probability")
+names(triFreq)  <- c("word", "freq", "probability")
+names(quadFreq) <- c("word", "freq", "probability")
+```
+
+# predict the next word
+
+```{r, echo=TRUE, warning=FALSE, message=FALSE}
+
+## get the last word n the vector.
+lastWord <- function(x) {
+  x= x[[length(x)]]
+}
+
+##########
+##
+## predictNextWord
+##
+##  given a string of at least one word predict the next
+##
+##  Input: string of at least one word
+##
+##  Output: List of 0 to 4 predictions in decending probability order
+##
+#########
+predictNextWord <- function(searchString) {
+
+  #browser()
+  number_of_predicted_words <- 4
+  searchString <- cleanString(searchString)
+  searchString_NumberOfWords <- length(strsplit(searchString," ")[[1]])
+  predictedWords <- c()
+  
+# search for last 3 words in quad and see what the most common next word is 
+  threeWords <- paste(strsplit(searchString," ")[[1]][(searchString_NumberOfWords-2) :
+                    (searchString_NumberOfWords-0)], collapse=" ")
+  quadList <- grep(paste("^", threeWords, sep=""), quadFreq$word)
+#  quadPhrase <- paste("'", quadFreq[quadList,]$word, "' occurs ", quadFreq[quadList,]$freq,
+#                      " times.", sep="")
+#  quadWord <- tail(strsplit(quadFreq[quadList,]$word, " ")[[1]], 1)
+  if (length(quadList) > 0) {
+    for (i in 1:min(number_of_predicted_words,length(quadList))) {
+      predictedWords <- append(predictedWords, lastWord(strsplit(quadFreq[quadList,]$word, " ")[[i]]))
+    }
+  }
+
+# search for last 2 words in tri and see what the most common next word is
+  twoWords <- paste(strsplit(searchString," ")[[1]][(searchString_NumberOfWords-1) : (searchString_NumberOfWords-0)], collapse=" ")
+  triList <- grep(paste("^", twoWords, sep=""), triFreq$word)
+#  triPhrase <- paste("'", triFreq[triList,]$word, "' occurs ", triFreq[triList,]$freq, " times.", sep="")
+#  triWord <- tail(strsplit(triFreq[triList,]$word, " ")[[1]], 1)
+  if (length(triList) > 0) {
+    for (i in 1:min(number_of_predicted_words,length(triList))) {
+      predictedWords <- append(predictedWords, lastWord(strsplit(triFreq[triList,]$word, " ")[[i]]))
+    }
+  }
+
+# search for last word in bi and see what the most common next word is
+  lastWord <- paste(strsplit(searchString," ")[[1]][(searchString_NumberOfWords-0) : (searchString_NumberOfWords-0)], collapse=" ")
+  biList <- grep(paste("^", lastWord, sep=""), biFreq$word)
+#  biPhrase <- paste("'", biFreq[biList,]$word, "' occurs ", biFreq[biList,]$freq, " times.", sep="")
+#  biWord <- tail(strsplit(biFreq[biList,]$word, " ")[[1]], 1)
+  if (length(biList) > 0) {
+    for (i in 1:min(number_of_predicted_words,length(biList))) {
+     predictedWords <- append(predictedWords, lastWord(strsplit(biFreq[biList,]$word, " ")[[i]]))
+    }
+  }
+
+  # finally, just pick the first few most common words
+   for (i in 1:min(number_of_predicted_words,length(uniFreq$word))) {
+    predictedWords <- append(predictedWords, trimws(uniFreq$word[i]))
+  }
+ 
+    predictedWords <- unique(predictedWords)
+    predictedWords <- head(predictedWords, number_of_predicted_words)
+    return(predictedWords)
+}
+
+## pick a random point within each message and test prediction
+
+testWords <- function(x) {
+
+    testMatch <- c(0,0,0,0,0)  # Not found and which one found
+for (i in 1:length(blogstest)) {
+#  for (i in 1:400) {
+    testString <- x[i]
+    testString <- cleanString(testString)
+    lengthTestString <- length(strsplit(testString," ")[[1]])
+    if (lengthTestString > 4) {
+      randomWord <- sample(4:lengthTestString-1, 1)
+      stringToPredict <-strsplit(testString," ")[[1]][(randomWord)]
+      testString <- paste(strsplit(testString," ")[[1]][1:(randomWord-1)], collapse=" ")
+      predictedWords <- predictNextWord(testString)
+
+      index <- grep(stringToPredict, predictedWords)
+      if (length(index)==0) {index=0}
+      index <- index + 1  #1 = not found, 2-5 = which of the predicted words.
+      testMatch[index] <- testMatch[index] + 1
+    }
+  }
+  return(testMatch)
+}
+
+blogsMatch <- testWords(blogstest)
+newsMatch  <- testWords(newstest)
+tweetMatch <- testWords(tweetstest)
+
+summaryStats <- data.frame()
+summaryStats <- rbind(summaryStats, c(blogsMatch, sum(blogsMatch[2:5])))
+summaryStats <- rbind(summaryStats, c(newsMatch, sum(newsMatch[2:5])))
+summaryStats <- rbind(summaryStats, c(tweetMatch, sum(tweetMatch[2:5])))
+total <- sum(blogsMatch+newsMatch+tweetMatch)
+sumStats <- rbind(colSums(summaryStats))
+
+summaryStats <- rbind(summaryStats, sumStats)
+summaryStats <- rbind(summaryStats, 100*sumStats/total)
+
+colnames(summaryStats) <- c("No Match", "Match 1st", "Match 2nd", "Match 3rd", "Match 4th", "Any Match")
+rownames(summaryStats) <- c("Blogs", "News", "Tweets", "Combined Total", "%")
+summaryStats <- format(round(summaryStats), scientific=FALSE, big.mark=",", drop0trailing=TRUE)
+knitr::kable(summaryStats, align = "r")
+```
+
+# Performance Stats
+
+```{r, echo=TRUE, warning=FALSE, message=FALSE}
+endTime <- proc.time()
+elapsedTime <- endTime - startTime
+elapsedTime
+gc()
+```
+
+```{r, echo=TRUE, warning=FALSE, message=FALSE}
+#x=gregexpr("'", str)
+#y=x[[1]][1:length(x[[1]])]
+#
+#for (i in 1:length(y)) {
+#  substr(str, y[i]-10, y[i]+10)
+#}
+
+# Quiz 1
+#  1: The guy in front of me just bought a pound of bacon, a bouquet, and a case of: beer
+#  2: You're the reason why I smile everyday. Can you follow me please? It would mean the: world
+#  3: Hey sunshine, can you follow me and make me the: happiest
+#  4: Very early observations on the Bills game: Offense still struggling but the: defense
+#  5: Go on a romantic date at the: beach
+#  6: Well I'm pretty sure my granny has some old bagpipes in her garage I'll dust them off and be on my: way
+#  7: Ohhhhh #PointBreak is on tomorrow. Love that film and haven't seen it in quite some: time
+#  8: After the ice bucket challenge Louis will push his long wet hair out of his eyes with his little: fingers
+#  9: Be grateful for the good times and keep the faith during the: bad
+# 10: If this isn't the cutest thing you've ever seen, then you must be: insane
+
+# Quiz 2
+#  1: When you breathe, I want to be the air for you. I'll be there for you, I'd live and I'd: die
+#  2: Guy at my table's wife got up to go to the bathroom and I asked about dessert and he started telling me about his: marital
+#  3: I'd give anything to see arctic monkeys this: weekend
+#  4: Talking to your mom has the same effect as a hug and helps reduce your: stress
+#  5: When you were in Holland you were like 1 inch away from me but you hadn't time to take a: picture
+#  6: I'd just like all of these questions answered, a presentation of evidence, and a jury to settle the: matter
+#  7: I can't deal with unsymetrical things. I can't even hold an uneven number of bags of groceries in each: hand
+#  8: Every inch of you is perfect from the bottom to the: top
+#  9: I'm thankful my childhood was filled with imagination and bruises from playing: outside
+# 10: I like how the same people are in almost all of Adam Sandler's: movies
+
+```
+

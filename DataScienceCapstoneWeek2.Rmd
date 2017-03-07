@@ -1,0 +1,296 @@
+---
+title: "Data Science Capstone: Week 2 - Milestone Report"
+author: "Ken Wade"
+date: "February 18, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache=TRUE, echo = TRUE)
+```
+## Introduction
+
+The purpose of the Milestone Report, the Week 2 Data Science Capstone assignment, is to get moving on the data that will be used in the final prediction model. Downloading, reading, and summarizing the data was required for the Week 1 Quiz. This assignment is our opportunity to produce an expanded Exploratory Analysis Report, share interesting findings, propose next steps, and gather feedback for work in the upcoming weeks.
+
+## Motivation
+
+From the course notes the motivation for this project is to:
+
+1. Demonstrate that you've downloaded the data and have successfully loaded it in.
+1. Create a basic report of summary statistics about the data sets.
+1. Report any interesting findings that you amassed so far.
+1. Get feedback on your plans for creating a prediction algorithm and Shiny app.
+
+## Setup libraries, random seed, and file names
+
+```{r, echo=TRUE, results="hide", warning=FALSE, message=FALSE}
+startTime <- proc.time()
+
+library(tm)
+library(wordcloud2)
+library(RWeka)
+
+set.seed(1)
+
+setwd("C:/Users/Ken/Documents/Ken/Continuing Education/Johns Hopkins School of Public Health - Data Science 10 - Capstone/Code")
+dataPath           <- "/data/Coursera-SwiftKey/final/en_US/"
+blogsFileName      <- "en_US.blogs.txt"
+newsFileName       <- "en_US.news.txt"
+twitterFileName    <- "en_US.twitter.txt"
+profanityFileName  <- "profanity.txt"
+```
+
+
+## Download and load data
+The dataset was downloaded from [https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip](https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip) then unzipped and stored locally for faster access. The blogs, news, and tweets files are locally located here:
+
+* blogs at **`r paste(".", dataPath, blogsFileName, sep="")`**
+* news at **`r paste(".", dataPath, newsFileName, sep="")`**
+* tweets at **`r paste(".", dataPath, twitterFileName, sep="")`**
+
+A standard list of profane words was found and converted to a simple text file. This file is locally located here:
+
+* profanity at **`r paste(".", dataPath, profanityFileName, sep="")`**
+
+## Reading the dataset files:
+
+```{r, echo=TRUE, results="hide", warning=FALSE, message=FALSE}
+# define the file reading function
+readfile <- function(filepath, filename) {
+  print(paste("Reading ", filename, "...", sep=""))
+  connection <- file(paste(".", filepath, filename, sep=""), "rb")
+  x <- readLines(connection, encoding="UTF-8", skipNul=TRUE)
+  close(connection)
+  x <- iconv(x, "UTF-8", "ASCII", sub="")
+  print(paste("Reading ", filename, " Complete", sep=""))
+  return(x)
+}
+
+blogs  <- readfile(dataPath, blogsFileName)
+news   <- readfile(dataPath, newsFileName)
+tweets <- readfile(dataPath, twitterFileName)
+profanity <- readfile(dataPath, profanityFileName)
+```
+
+
+## Basic Raw Data Summary Statistics (Week 1 Quiz)
+```{r, echo=TRUE, warning=FALSE, message=FALSE}
+blogs_FileSize      <- file.info(paste(".", dataPath, blogsFileName, sep=""))$size / 2^10
+blogs_NumberOfLines <- length(blogs)
+blogs_NumberOfWords <- sum(sapply(gregexpr("\\W+", blogs), length))
+blogs_LongestLine   <- max(nchar(blogs))
+
+news_FileSize      <- file.info(paste(".", dataPath, newsFileName, sep=""))$size / 2^10
+news_NumberOfLines <- length(news)
+news_NumberOfWords <- sum(sapply(gregexpr("\\W+", news), length))
+news_LongestLine   <- max(nchar(news))
+
+tweets_FileSize      <- file.info(paste(".", dataPath, twitterFileName, sep=""))$size / 2^10
+tweets_NumberOfLines <- length(tweets)
+tweets_NumberOfWords <- sum(sapply(gregexpr("\\W+", tweets), length))
+tweets_LongestLine   <- max(nchar(tweets))
+
+profanity_FileSize      <- file.info(paste(".", dataPath, profanityFileName, sep=""))$size / 2^10
+profanity_NumberOfLines <- length(profanity)
+profanity_NumberOfWords <- sum(sapply(gregexpr("\\W+", profanity), length))
+profanity_LongestLine   <- max(nchar(profanity))
+
+Tweet_love_hate_ratio = length(grep("love", tweets, ignore.case=FALSE, value=TRUE)) /
+                        length(grep("hate", tweets, ignore.case=FALSE, value=TRUE))
+
+summaryStats <- matrix(c(blogs_FileSize, news_FileSize, tweets_FileSize, profanity_FileSize,
+                  blogs_NumberOfLines, news_NumberOfLines, tweets_NumberOfLines, profanity_NumberOfLines,
+                  blogs_NumberOfWords, news_NumberOfWords, tweets_NumberOfWords, profanity_NumberOfWords,
+                  blogs_LongestLine, news_LongestLine, tweets_LongestLine, profanity_LongestLine),
+                  nrow=4, ncol=4)
+summaryStats <- format(round(summaryStats), scientific=FALSE, big.mark=",", drop0trailing=TRUE)
+
+colnames(summaryStats) <- c("File Size (in KB)", "Number of Lines", "Number of Words", "Maximum Characters in Line")
+rownames(summaryStats) <- c("Blogs", "News", "Tweets", "Profanity")
+knitr::kable(summaryStats, align = "r")
+```
+
+## Sample and divide into Training and Testing sets (throw away the remaining third set)
+```{r, echo=TRUE, results="hide", warning=FALSE, message=FALSE}
+setPercent <- 0.5   # percent of each file type to sample
+setProb <- c(setPercent/100, setPercent/100, 1-2*setPercent/100)  # Must total 1.00
+
+idx <- sample(seq(1, 3), size = length(blogs), replace = TRUE, prob = setProb)
+blogstrain <- blogs[idx == 1]
+blogstest <- blogs[idx == 2]
+
+idx <- sample(seq(1, 3), size = length(news), replace = TRUE, prob = setProb)
+newstrain <- news[idx == 1]
+newstest <- news[idx == 2]
+
+idx <- sample(seq(1, 3), size = length(tweets), replace = TRUE, prob = setProb)
+tweetstrain <- tweets[idx == 1]
+tweetstest <- tweets[idx == 2]
+
+# free up no longer used memory and collect garbage
+rm(idx)
+rm(blogs)
+rm(news)
+rm(tweets)
+gc()
+```
+
+## Create Corpus
+```{r, echo=TRUE, results="hide", warning=FALSE, message=FALSE}
+allWordSeparators  <- "[[:punct:]]|\u00ad|\u0091|\u0092|\u0093|\u0094|\u0095|\u0096|\u0097|\u0098|\u00a6"
+toSpace <- content_transformer(function(x, pattern) {return (gsub(pattern, ' ', x))})
+
+rawCorpus <- Corpus(VectorSource(c(blogstrain, newstrain, tweetstrain)))
+
+stopWordCorpus <- tm_map(rawCorpus, toSpace, allWordSeparators)
+stopWordCorpus <- tm_map(stopWordCorpus, removeNumbers)
+stopWordCorpus <- tm_map(stopWordCorpus, removePunctuation)
+stopWordCorpus <- tm_map(stopWordCorpus, tolower)
+stopWordCorpus <- tm_map(stopWordCorpus, removeWords, profanity)
+stopWordCorpus <- tm_map(stopWordCorpus, stripWhitespace)
+stopWordCorpus <- tm_map(stopWordCorpus, PlainTextDocument)
+
+meaningfulCorpus<-tm_map(stopWordCorpus, removeWords, stopwords("english"))
+```
+
+## Build N-Grams
+```{r, echo=TRUE, results="hide", warning=FALSE, message=FALSE}
+# functions to compute NGrams
+unigram  <- function(x) NGramTokenizer(x, Weka_control(min = 1, max = 1))
+bigram   <- function(x) NGramTokenizer(x, Weka_control(min = 2, max = 2))
+trigram  <- function(x) NGramTokenizer(x, Weka_control(min = 3, max = 3))
+quadgram <- function(x) NGramTokenizer(x, Weka_control(min = 4, max = 4))
+
+# function Calculate Frequencies
+getFreq <- function(tdm){
+  freq <- sort(rowSums(as.matrix(tdm)), decreasing=TRUE)
+  return(data.frame(word=names(freq), freq=freq))
+}
+
+stopwords_unigram_tdm  <- removeSparseTerms(TermDocumentMatrix(stopWordCorpus, control=list(tokenize = unigram )), 0.9999)
+stopwords_bigram_tdm   <- removeSparseTerms(TermDocumentMatrix(stopWordCorpus, control=list(tokenize = bigram  )), 0.9999)
+stopwords_trigram_tdm  <- removeSparseTerms(TermDocumentMatrix(stopWordCorpus, control=list(tokenize = trigram )), 0.9999)
+stopwords_quadgram_tdm <- removeSparseTerms(TermDocumentMatrix(stopWordCorpus, control=list(tokenize = quadgram)), 0.9999)
+meaningful_unigram_tdm  <- removeSparseTerms(TermDocumentMatrix(meaningfulCorpus, control=list(tokenize = unigram )), 0.9999)
+meaningful_bigram_tdm   <- removeSparseTerms(TermDocumentMatrix(meaningfulCorpus, control=list(tokenize = bigram  )), 0.9999)
+meaningful_trigram_tdm  <- removeSparseTerms(TermDocumentMatrix(meaningfulCorpus, control=list(tokenize = trigram )), 0.9999)
+meaningful_quadgram_tdm <- removeSparseTerms(TermDocumentMatrix(meaningfulCorpus, control=list(tokenize = quadgram)), 0.9999)
+
+stopwords_uniFreq  <- getFreq(stopwords_unigram_tdm)
+stopwords_biFreq   <- getFreq(stopwords_bigram_tdm)
+stopwords_triFreq  <- getFreq(stopwords_trigram_tdm)
+stopwords_quadFreq <- getFreq(stopwords_quadgram_tdm)
+meaningful_uniFreq  <- getFreq(meaningful_unigram_tdm)
+meaningful_biFreq   <- getFreq(meaningful_bigram_tdm)
+meaningful_triFreq  <- getFreq(meaningful_trigram_tdm)
+meaningful_quadFreq <- getFreq(meaningful_quadgram_tdm)
+```
+
+## Questions to Consider
+
+1. Some words are more frequent than others - what are the distributions of word frequencies?
+    + Please see the graphs below. Word frequencies for 1-, 2-, 3, and 4-grams are shown for the complete dataset and the dataset with "stop words" removed.
+
+&nbsp;
+
+2. What are the frequencies of 2-grams and 3-grams in the dataset?
+    + As I evaluated the data it became obvious that removing "stop words" made a huge difference in word frequencies. This is absolutely expected as that is the entire point in removing "stop words". However, to create a good model "stop words" must be included, yet removing them gives a more interesting view into the corpus.
+    + For the following graphics, the left-side graphics include "stop words", the right-side graphics do not.
+    
+    
+```{r, echo=TRUE, warning=FALSE, message=FALSE, out.width = '1250px', dpi=200}
+# function Plot NGrams
+plotFreq <- function(wordfreq, graphLabel, freqMax) {
+  return(barplot(wordfreq[1:25,2], col="lightblue", names.arg=wordfreq$word[1:25], space=0.1,
+          xlim=c(0,25), ylim=c(0, freqMax), las=2, main=graphLabel, ylab="Frequency", cex.names=0.4))
+}
+
+par(mfrow = c(1,2))
+  plotFreq(stopwords_uniFreq,  "UniGrams-WITH Stop Words", max(stopwords_uniFreq$freq))
+  plotFreq(meaningful_uniFreq, "UniGrams-NO Stop Words", max(stopwords_uniFreq$freq))
+par(mfrow = c(1,2))
+  plotFreq(stopwords_biFreq,   "BiGrams-WITH Stop Words", max(stopwords_biFreq$freq))
+  plotFreq(meaningful_biFreq,  "BiGrams-NO Stop Words", max(stopwords_biFreq$freq))
+par(mfrow = c(1,2))
+  plotFreq(stopwords_triFreq,  "TriGrams-WITH Stop Words", max(stopwords_triFreq$freq))
+  plotFreq(meaningful_triFreq, "TriGrams-NO Stop Words", max(stopwords_triFreq$freq))
+par(mfrow = c(1,2))
+  plotFreq(stopwords_quadFreq, "QuadGrams-WITH Stop Words", max(stopwords_quadFreq$freq))
+  plotFreq(meaningful_quadFreq,"QuadGrams-NO Stop Words", max(stopwords_quadFreq$freq))
+```
+
+
+#### As Word Clouds are trendy below is a Word Cloud of the corpus without "stop words".
+    
+  
+```{r, echo=TRUE, warning=FALSE, message=FALSE, out.width = '1250px', dpi=200}
+wordcloud2(head(meaningful_uniFreq, 200))
+```
+
+
+```{r, echo=TRUE, warning=FALSE, message=FALSE, out.width = '1250px', dpi=200}
+cum_stopwords_uniFreq <- 100 * cumsum(stopwords_uniFreq$freq) / sum(stopwords_uniFreq$freq)
+
+for (over50 in 1:length(cum_stopwords_uniFreq)) {
+    if (cum_stopwords_uniFreq[over50] >= 50) { break }
+}
+for (over90 in 1:length(cum_stopwords_uniFreq)) {
+    if (cum_stopwords_uniFreq[over90] >= 90) { break }
+}
+
+plot(cum_stopwords_uniFreq, xlab="Number of Words", ylab="Percent of Total Word Coverage", main="Percent Word Coverage vs. Number of Words", type="S")
+abline(h=50, col="blue")
+abline(v=over50, col="blue")
+abline(h=90, col="red")
+abline(v=over90, col="red")
+```
+ 
+
+3. How many unique words do you need in a frequency sorted dictionary to cover 50% of all word instances in the language? 90%?
+
+    + The graph above shows the percent coverage verses the number of unique word instances. It is easy to see that each unique word in the sorted dictionary produces less and less percent coverage. This means it takes more and more words to get increasing percent coverage.
+    + 50% coverage requires more than **`r over50` words**, 90% coverage requires more than **`r over90` words**.
+
+&nbsp;
+
+4. How do you evaluate how many of the words come from foreign languages?
+    + Need to reconsider the *iconv* conversion of "UTF-8" to "ASCII" when reading the data. May have to do that later in the process so comparisons can be made.
+    + Also need to understand if "ASCII" included the "Extended ASCII" characters.
+    + At this stage of the development processing foreign languages must come later.
+
+&nbsp;
+
+5. Can you think of a way to increase the coverage -- identifying words that may not be in the corpora or using a smaller number of words in the dictionary to cover the same number of phrases?
+    + Expand contractions before processing any punctuation. This will eliminate contraction errors.
+    + Spell check the words. This will reduce spelling variations and reduced the number of words.
+    + Not combine blogs, news, and tweets. Each of these appears to have a different distribution of words. Run three seperate models.
+    + Get rid of the 1-letter words (after the Expand Contractions improvement)
+
+## Get feedback on your plans for creating a prediction algorithm and Shiny app.
+My plans for the prediction algorithm are to first learn from this assignment and get better words into the model by focusing on Contraction Elimination and eliminating 1-letter words, except "A" and "I", as well as focusing on the full corpus and not removing "stop words".
+
+While iterating I will also be focusing on getting the R caching better. It seems like my setup is not fully caching each code segment. The **Performance Stats** section at the bottom shows elapsed time for building the model.
+
+I'm thinking how to work backwards down through the N-Grams and make predictions. Hopefully, the next week of class with provide insights into this process. It doesn't sound that difficult in concept.
+
+Shiny implementation comes last. There is only one reactive element and the model will be calculated beforehand with only the N-Gram frequency information needed on the server. This portion does not sound particularly difficult in concept either.
+
+## Citations
+
+* Profanity Word List: [https://groups.google.com/forum/#!topic/k12appstech/vyzO5YOnOBA](https://groups.google.com/forum/#!topic/k12appstech/vyzO5YOnOBA)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Eric Curts  
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Technology Director, North Canton City Schools  
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;525 - 7th St NE, North Canton, OH 44720
+
+* toSpace Function: [https://eight2late.wordpress.com/2015/05/27/a-gentle-introduction-to-text-mining-using-r/](https://eight2late.wordpress.com/2015/05/27/a-gentle-introduction-to-text-mining-using-r/)
+* List of Contractions: [https://en.wikipedia.org/wiki/Wikipedia:List_of_English_contractions](https://en.wikipedia.org/wiki/Wikipedia:List_of_English_contractions)
+
+# Performance Stats
+
+```{r, echo=TRUE, warning=FALSE, message=FALSE}
+endTime <- proc.time()
+elapsedTime <- endTime - startTime
+elapsedTime
+gc()
+```
